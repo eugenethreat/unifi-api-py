@@ -8,6 +8,7 @@ packages = [{include = "unifiapipy", from = "src"}]
 
 [tool.poetry.scripts]
 scrape_all = "unifiapipy.main:do_full_scrape"
+get_aps = "unifiapipy.main:get_aps"
 
 [tool.poetry.dependencies]
 python = "^3.10"
@@ -16,6 +17,7 @@ plotly = "~5"
 pandas = "^1.5.1"
 boto3 = "^1.26.26"
 click = "^8.1.3"
+python-dotenv = "*"
 
 [tool.poetry.group.dev.dependencies]
 black = "~22"

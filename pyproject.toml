@@ -8,6 +8,7 @@ packages = [{include = "unifiapipy", from = "src"}]
 
 [tool.poetry.scripts]
 scrape_all = "unifiapipy.main:do_full_scrape"
+get_aps = "unifiapipy.main:get_aps"
 
 [tool.poetry.dependencies]
 python = "^3.10"

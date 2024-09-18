@@ -7,7 +7,12 @@ import logging
 import os
 import random
 import requests
+import time
 
+from dotenv import load_dotenv
+load_dotenv()  # take environment variables from .env.
+
+SLEEP_MS = 10000
 
 class Unifi:
     """
@@ -57,7 +62,10 @@ class Unifi:
         boto3_secret_key,
         boto3_bucket,
     ):
-        self.BASE_URL = "https://" + unifi_api_base_url
+        if 'localhost' in unifi_api_base_url:
+            self.BASE_URL = "http://" + unifi_api_base_url
+        else:
+            self.BASE_URL = "https://" + unifi_api_base_url
         self.HEADERS = {}
         self.PATH_TO_PAYLOADS_FILE = (
             Path(__file__).parent / "data/collection_payloads.json"
@@ -169,8 +177,18 @@ class Unifi:
 
     def scrape_set_of_collections(self, list_of_collections):
         for collection in list_of_collections:
+            time.sleep(SLEEP_MS)
             self.fetch_and_upload_collection(collection)
 
+    def print_collection(self, collection_name):
+        """
+            Just a test method for cron 
+            args:
+            - collection_name - the name of the collection to fetch
+        """
+        collection = self.fetch_collection(collection_name)
+        print(collection)
+        # logging.info(collection)
 
 def load_collection_payloads(path_to_collection_json):
     p = Path()
@@ -209,3 +227,25 @@ def do_full_scrape():
         logging.info("Scraping and uploading " + collection)
         u.fetch_and_upload_collection(collection)
     logging.info("Success! Check your object storage for the results.")
+
+def get_aps():
+    UNIFI_API_BASE_URL = os.getenv("UNIFI_API_BASE_URL")
+    UNIFI_API_USER = os.getenv("UNIFI_API_USERNAME")
+    UNIFI_API_PASSWORD = os.getenv("UNIFI_API_PASSWORD")
+    BOTO3_ENDPOINT_URL = os.getenv("BOTO3_ENDPOINT_URL")
+    BOTO3_ACCESS_KEY = os.getenv("BOTO3_ACCESS_KEY")
+    BOTO3_SECRET_KEY = os.getenv("BOTO3_SECRET_KEY")
+    BOTO3_BUCKET = os.getenv("BOTO3_BUCKET")
+    u = Unifi(
+        UNIFI_API_BASE_URL,
+        UNIFI_API_USER,
+        UNIFI_API_PASSWORD,
+        BOTO3_ENDPOINT_URL,
+        BOTO3_ACCESS_KEY,
+        BOTO3_SECRET_KEY,
+        BOTO3_BUCKET,
+    )
+    u.login()
+
+    u.print_collection('list_devices')
+

@@ -1,3 +1,6 @@
 tmp/
 *.code-workspace
 __pycache__/
+
+.env
+tmp.log

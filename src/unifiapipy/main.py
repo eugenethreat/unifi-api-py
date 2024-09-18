@@ -8,8 +8,6 @@ import os
 import random
 import requests
 
-from dotenv import load_dotenv
-load_dotenv()  # take environment variables from .env.
 
 class Unifi:
     """
@@ -21,6 +19,10 @@ class Unifi:
               front (e.g. www.myapibrowserurl.com NOT https://www.myapibrowserurl.com)
     unifi_api_user
     unifi_api_password
+    boto3_endpoint_url
+    boto3_access_key
+    boto3_secret_key
+    boto3_bucket
     TODO: Docstring
 
     Usage
@@ -29,6 +31,10 @@ class Unifi:
         unifi_api_base_url,
         unifi_api_user,
         unifi_api_password,
+        boto3_endpoint_url,
+        boto3_access_key,
+        boto3_secret_key,
+        boto3_bucket)
     u.login()
     ... do whatever fetching and scraping you like
     u.fetch_collection('stat_5minutes_site')
@@ -46,13 +52,22 @@ class Unifi:
         unifi_api_base_url,
         unifi_api_user,
         unifi_api_password,
+        boto3_endpoint_url,
+        boto3_access_key,
+        boto3_secret_key,
+        boto3_bucket,
     ):
-        self.BASE_URL = "http://" + unifi_api_base_url
+        self.BASE_URL = "https://" + unifi_api_base_url
         self.HEADERS = {}
         self.PATH_TO_PAYLOADS_FILE = (
-            Path(__file__).parent / "data/list_devices.json"
-            # Path(__file__).parent / "data/collection_payloads.json"
+            Path(__file__).parent / "data/collection_payloads.json"
         )
+        self.BOTO3_CONFIG = {
+            "aws_access_key_id": boto3_access_key,
+            "aws_secret_access_key": boto3_secret_key,
+            "endpoint_url": boto3_endpoint_url,
+        }
+        self.BOTO3_BUCKET = boto3_bucket
         self.UNIFI_LOGIN = (unifi_api_user, unifi_api_password)
         self.PAYLOADS = load_collection_payloads(self.PATH_TO_PAYLOADS_FILE)
         self.CURRENT_SCRAPE_START_TIME = datetime.now(tz=timezone.utc)
@@ -64,7 +79,7 @@ class Unifi:
 
     def login(self):
         self.session = self.login_unifi_api(*self.UNIFI_LOGIN)
-        # self.boto3_client = self.login_boto3(self.BOTO3_CONFIG)
+        self.boto3_client = self.login_boto3(self.BOTO3_CONFIG)
 
     def login_unifi_api(self, user, password):
         """
@@ -82,21 +97,18 @@ class Unifi:
         and ready to fetch data.
 
         """
-        logging.info(
-            "Doing log_in with user "
-            + str(user)
-        )
-
-        # sw to 'user_name', not 'username'
-        login_payload = {"user_name": user, "password": password}
+        login_payload = {"username": user, "password": password}
         s = requests.Session()
         s.headers.update(self.HEADERS)
         login_response = s.post(
-            self.BASE_URL + self.URL_PATHS["login"], data=login_payload 
+            self.BASE_URL + self.URL_PATHS["login"], json=login_payload
         )
-        # check for bad auth
-        if ("user name and password do not match, please try again" in login_response.text):
-            raise Exception("Login Failed!")
+        logging.debug(
+            "Doing log_in with user "
+            + str(user)
+            + ". Response status_code="
+            + str(login_response.status_code)
+        )
         try:
             login_response.raise_for_status()
         except requests.exceptions.HTTPError as e:
@@ -107,10 +119,18 @@ class Unifi:
         # https://stackoverflow.com/questions/41350762/python-requests-logging-into-website-using-post-and-cookies
         # s.cookies.set('PHPSESSID', requests.utils.dict_from_cookiejar(s.cookies)['PHPSESSID'])
         # self.HEADERS['Cookie'] = 'PHPSESSID=' + requests.utils.dict_from_cookiejar(s.cookies)['PHPSESSID']
-        # self.session = s            
+        # self.session = s
 
+        # NOTE: WE HAVE TO UPDATE THE CONTROLLER BEFORE MOVING FORWARD!
+        s.post(
+            self.BASE_URL + "/ajax/update_controller.php",
+            data={"new_controller_idx": 1},
+        )
         logging.info("Logged in successfully")
         return s
+
+    def login_boto3(self, boto3_config):
+        return boto3.client("s3", **boto3_config)
 
     def handle_bad_response(self, response):
         logging.error("Bad response - code=" + str(response.status_code))
@@ -120,19 +140,38 @@ class Unifi:
         payload = self.PAYLOADS.get(collection_name)
         if not payload:
             raise Exception("Passed collection not implemented.")
-        
-        # set headers 
-        cookies = self.session.cookies
-        php_sessid = cookies.get_dict()['PHPSESSID']
-        print(php_sessid)
-
         r = self.session.post(
             self.BASE_URL + "/ajax/fetch_collection.php",
             headers=self.HEADERS,
             data=payload,
         )
         return r.json().get("data")
-    
+
+    def upload_collection_with_boto(self, collection, bucket_name, file_name):
+        buffer = BytesIO()
+        buffer.write(json.dumps(collection).encode())
+        buffer.seek(0)
+        self.boto3_client.upload_fileobj(buffer, bucket_name, file_name)
+
+    # def fetch_collection and write w boto
+    # for a given collection key, calls fetch_collection, and then calls upload_collection_with_boto WITH AN APPROPRIATE NAME
+    def fetch_and_upload_collection(self, collection_name):
+        collection = self.fetch_collection(collection_name)
+        file_path = (
+            self.CURRENT_SCRAPE_START_TIME.strftime("%Y/%m/%d")
+            + "/"
+            + collection_name
+            + "--"
+            + self.CURRENT_SCRAPE_START_TIME.strftime("%Y-%m-%d--%H-%M-%S")
+            + ".json"
+        )
+        self.upload_collection_with_boto(collection, self.BOTO3_BUCKET, file_path)
+
+    def scrape_set_of_collections(self, list_of_collections):
+        for collection in list_of_collections:
+            self.fetch_and_upload_collection(collection)
+
+
 def load_collection_payloads(path_to_collection_json):
     p = Path()
     with path_to_collection_json.open() as f:
@@ -151,10 +190,18 @@ def do_full_scrape():
     UNIFI_API_BASE_URL = os.getenv("UNIFI_API_BASE_URL")
     UNIFI_API_USER = os.getenv("UNIFI_API_USERNAME")
     UNIFI_API_PASSWORD = os.getenv("UNIFI_API_PASSWORD")
+    BOTO3_ENDPOINT_URL = os.getenv("BOTO3_ENDPOINT_URL")
+    BOTO3_ACCESS_KEY = os.getenv("BOTO3_ACCESS_KEY")
+    BOTO3_SECRET_KEY = os.getenv("BOTO3_SECRET_KEY")
+    BOTO3_BUCKET = os.getenv("BOTO3_BUCKET")
     u = Unifi(
         UNIFI_API_BASE_URL,
         UNIFI_API_USER,
         UNIFI_API_PASSWORD,
+        BOTO3_ENDPOINT_URL,
+        BOTO3_ACCESS_KEY,
+        BOTO3_SECRET_KEY,
+        BOTO3_BUCKET,
     )
     u.login()
     all_collections = u.PAYLOADS.keys()
@@ -162,32 +209,3 @@ def do_full_scrape():
         logging.info("Scraping and uploading " + collection)
         u.fetch_and_upload_collection(collection)
     logging.info("Success! Check your object storage for the results.")
-
-def get_aps():
-    logging.basicConfig(level=logging.INFO, handlers=[
-        logging.FileHandler("tmp.log"),
-        logging.StreamHandler()
-    ])
-    logging.info("grabbing APs...")
-
-    UNIFI_API_BASE_URL = os.getenv("UNIFI_API_BASE_URL")
-    UNIFI_API_USER = os.getenv("UNIFI_API_USER")
-    UNIFI_API_PASSWORD = os.getenv("UNIFI_API_PASSWORD")
-    
-    u = Unifi(
-        UNIFI_API_BASE_URL,
-        UNIFI_API_USER,
-        UNIFI_API_PASSWORD,
-    )
-
-    u.login()
-
-    logging.info("grabbing devices...")
-    all_collections = u.PAYLOADS.keys()
-    for collection_name in all_collections:
-        print(collection_name)
-        collection = u.fetch_collection(collection_name)
-        print(collection)
-
-    logging.info("done")
-
